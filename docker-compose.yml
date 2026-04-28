@@ -1,0 +1,29 @@
+services:
+  wg-client:
+    image: lscr.io/linuxserver/wireguard:latest
+    container_name: vpn-router-wg
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    environment:
+      - PUID=0
+      - PGID=0
+      - TZ=Europe/Moscow
+    volumes:
+      - ./wireguard:/config/wg_confs:ro
+      - /lib/modules:/lib/modules:ro
+    sysctls:
+      - net.ipv4.conf.all.src_valid_mark=1
+      - net.ipv4.ip_forward=1
+    restart: unless-stopped
+
+  dnsmasq:
+    image: jpillora/dnsmasq:latest
+    container_name: vpn-router-dns
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    volumes:
+      - ./dnsmasq/dnsmasq.conf:/etc/dnsmasq.conf:ro
+      - ./lists/custom-hosts.hosts:/etc/custom-hosts.hosts:ro
+    restart: unless-stopped
