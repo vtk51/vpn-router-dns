@@ -1,0 +1,12 @@
+[Interface]
+PrivateKey = CHANGE_ME
+Address = 10.8.0.8/24
+DNS = 8.8.8.8, 1.1.1.1
+MTU = 1420
+
+[Peer]
+PublicKey = CHANGE_ME
+PresharedKey = CHANGE_ME
+AllowedIPs = 0.0.0.0/0, ::/0
+PersistentKeepalive = 25
+Endpoint = example.com:51820
