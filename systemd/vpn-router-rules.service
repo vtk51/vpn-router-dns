@@ -1,0 +1,14 @@
+[Unit]
+Description=Apply VPN Router policy routing rules
+After=docker.service docker.network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/stacks/vpn-router
+ExecStartPre=/usr/bin/docker compose up -d
+ExecStart=/opt/stacks/vpn-router/scripts/apply-rules.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
