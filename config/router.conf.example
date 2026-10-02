@@ -1,0 +1,11 @@
+# Copy to router.conf. Trusted Bash configuration: keep root-owned and mode 600.
+# Adapt to your LAN. These are examples, not detected server settings.
+LAN_IF="eth0"
+LAN_NET="192.168.50.0/24"
+
+# IPv4 literal addresses only. dnsmasq uses these upstreams.
+# Host OUTPUT: UDP/53 via VPN; TCP/53 direct (intentional current policy).
+DNS_UPSTREAMS=(8.8.8.8 1.1.1.1)
+# Additional host resolvers excluded from VPN classification for UDP/TCP 53.
+# Do not overlap DNS_UPSTREAMS. This does NOT edit /etc/resolv.conf.
+DNS_DIRECT=(77.88.8.8)

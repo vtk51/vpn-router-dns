@@ -1,0 +1,14 @@
+# Bootstrap config. Copy to dnsmasq.conf and match interface to router.conf.
+# rebuild-lists.sh regenerates the whole working file; edit router.conf/lists.
+port=53
+bind-interfaces
+interface=eth0
+
+no-resolv
+server=8.8.8.8
+server=1.1.1.1
+
+cache-size=10000
+min-cache-ttl=300
+
+addn-hosts=/etc/custom-hosts.hosts

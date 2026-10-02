@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodic safety reconcile for selective VPN routing
+
+[Timer]
+OnBootSec=30s
+OnUnitInactiveSec=60s
+AccuracySec=5s
+Persistent=true
+Unit=vpn-router-rules.service
+
+[Install]
+WantedBy=timers.target

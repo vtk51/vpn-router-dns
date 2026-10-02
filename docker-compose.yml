@@ -1,3 +1,4 @@
+name: vpn-router
 services:
   wg-client:
     image: lscr.io/linuxserver/wireguard:latest
@@ -8,7 +9,7 @@ services:
     environment:
       - PUID=0
       - PGID=0
-      - TZ=Europe/Moscow
+      - TZ=Etc/UTC
     volumes:
       - ./wireguard:/config/wg_confs:ro
       - /lib/modules:/lib/modules:ro
@@ -20,6 +21,8 @@ services:
   dnsmasq:
     image: jpillora/dnsmasq:latest
     container_name: vpn-router-dns
+    # No webproc UI: do not expose a management listener on host port 8080.
+    entrypoint: [dnsmasq, --keep-in-foreground, --log-facility=-]
     network_mode: host
     cap_add:
       - NET_ADMIN
