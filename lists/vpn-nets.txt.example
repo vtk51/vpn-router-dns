@@ -1,0 +1,4 @@
+# One IPv4 address or CIDR per line. Must contain at least one network.
+# Documentation-only example: replace with the public networks you intend to route.
+# Avoid LAN/private ranges, WireGuard endpoint and broad unrelated CDN ranges.
+198.51.100.0/24

@@ -1,14 +1,11 @@
 [Unit]
-Description=Apply VPN Router policy routing rules
-After=docker.service docker.network-online.target
-Requires=docker.service
+Description=Reconcile selective VPN routing for LAN and Debian host
+After=network-online.target docker.service
+Wants=network-online.target
 
 [Service]
 Type=oneshot
 WorkingDirectory=/opt/stacks/vpn-router
-ExecStartPre=/usr/bin/docker compose up -d
 ExecStart=/opt/stacks/vpn-router/scripts/apply-rules.sh
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
+TimeoutStartSec=180
+RemainAfterExit=no
