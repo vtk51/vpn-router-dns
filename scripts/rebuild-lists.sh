@@ -99,32 +99,33 @@ write_record() {
   local next_phase="$1"
   local record_tmp="$TXN_RECORD.tmp.$TXID"
 
-  PHASE="$next_phase"
-  {
-    printf 'transaction_id=%s\n' "$TXID"
-    printf 'phase=%s\n' "$PHASE"
-    printf 'temporary_set=%s\n' "$TEMP_SET"
-    printf 'work_dir=%s\n' "$WORK_DIR"
-    printf 'dnsmasq_candidate=%s\n' "$DNSMASQ_CANDIDATE"
-    printf 'old_vpn_nets_fingerprint=%s\n' "$OLD_NETS_FP"
-    printf 'candidate_vpn_nets_fingerprint=%s\n' "$CANDIDATE_NETS_FP"
-    printf 'old_dnsmasq_config_hash=%s\n' "$OLD_DNSMASQ_HASH"
-    printf 'candidate_dnsmasq_config_hash=%s\n' "$CANDIDATE_DNSMASQ_HASH"
-    printf 'expected_network_count=%s\n' "$EXPECTED_NETS"
-    printf 'expected_domain_count=%s\n' "$EXPECTED_DOMAINS"
-    printf 'dnsmasq_container_id_before=%s\n' "$DNSMASQ_ID_BEFORE"
-    printf 'dnsmasq_container_id_after=%s\n' "$DNSMASQ_ID_AFTER"
-  } > "$record_tmp"
-  chmod 600 "$record_tmp"
-  python3 - "$record_tmp" <<'PY'
+  # Every operation is checked explicitly: callers may disable errexit.
+  # Publish the in-memory phase only after the whole journal update succeeds.
+  if ! {
+    printf '%s\n' \
+      "transaction_id=$TXID" \
+      "phase=$next_phase" \
+      "temporary_set=$TEMP_SET" \
+      "work_dir=$WORK_DIR" \
+      "dnsmasq_candidate=$DNSMASQ_CANDIDATE" \
+      "old_vpn_nets_fingerprint=$OLD_NETS_FP" \
+      "candidate_vpn_nets_fingerprint=$CANDIDATE_NETS_FP" \
+      "old_dnsmasq_config_hash=$OLD_DNSMASQ_HASH" \
+      "candidate_dnsmasq_config_hash=$CANDIDATE_DNSMASQ_HASH" \
+      "expected_network_count=$EXPECTED_NETS" \
+      "expected_domain_count=$EXPECTED_DOMAINS" \
+      "dnsmasq_container_id_before=$DNSMASQ_ID_BEFORE" \
+      "dnsmasq_container_id_after=$DNSMASQ_ID_AFTER" > "$record_tmp" &&
+    chmod 600 "$record_tmp" &&
+    python3 - "$record_tmp" <<'PY' &&
 import os
 import sys
 
 with open(sys.argv[1], 'rb', buffering=0) as record:
     os.fsync(record.fileno())
 PY
-  mv -f "$record_tmp" "$TXN_RECORD"
-  python3 - "$RUNTIME_DIR" <<'PY'
+    mv -f "$record_tmp" "$TXN_RECORD" &&
+    python3 - "$RUNTIME_DIR" <<'PY'
 import os
 import sys
 
@@ -134,6 +135,12 @@ try:
 finally:
     os.close(directory)
 PY
+  }; then
+    KEEP_ARTIFACTS=1
+    printf 'error: transaction journal update failed (phase=%s)\n' "$next_phase" >&2
+    return 1
+  fi
+  PHASE="$next_phase"
 }
 
 signal_handler() {
@@ -170,7 +177,11 @@ destroy_owned_candidate() {
         "$(ipset_entry_count "$TEMP_SET")" == "$EXPECTED_NETS" &&
         "$(ipset list "$TEMP_SET" | awk '$1 == "Type:" {value=$2} END {print value}')" == "hash:net" &&
         "$(ipset list "$TEMP_SET" | awk '$1 == "Header:" && /family inet/ {value="inet"} END {print value}')" == "inet" ]]; then
-    ipset destroy "$TEMP_SET"
+    if ! ipset destroy "$TEMP_SET"; then
+      KEEP_ARTIFACTS=1
+      printf 'preserving temporary set %s: destruction failed\n' "$TEMP_SET" >&2
+      return 1
+    fi
     TEMP_CREATED=0
   elif [[ "$PHASE" == "SWAPPED" || "$PHASE" == "DNSMASQ_CONFIG_INSTALLED" ||
           "$PHASE" == "DNSMASQ_COMMITTED" || "$PHASE" == "RECONCILED" ||
@@ -180,9 +191,11 @@ destroy_owned_candidate() {
     fi
     printf 'preserving temporary set %s: ownership/content could not be verified\n' "$TEMP_SET" >&2
     KEEP_ARTIFACTS=1
+    return 1
   else
     printf 'preserving temporary set %s: ownership/content could not be verified\n' "$TEMP_SET" >&2
     KEEP_ARTIFACTS=1
+    return 1
   fi
 }
 
@@ -196,7 +209,7 @@ rollback_ipset_if_safe() {
     ipset swap "$TEMP_SET" "$VPN_NETS"
     [[ "$(ipset_membership_hash "$VPN_NETS")" == "$OLD_NETS_FP" ]] || return 1
     [[ "$(ipset_membership_hash "$TEMP_SET")" == "$CANDIDATE_NETS_FP" ]] || return 1
-    write_record ROLLED_BACK
+    write_record ROLLED_BACK || return 1
     return 0
   fi
 
@@ -212,7 +225,7 @@ restore_dnsmasq_if_safe() {
   chown --reference="$DNSMASQ_CONF" "$restore_candidate"
   mv -f "$restore_candidate" "$DNSMASQ_CONF"
   if ! recreate_dnsmasq "$OLD_DNSMASQ_HASH" "$EXPECTED_DOMAINS"; then
-    write_record DNSMASQ_RECOVERY_FAILED || true
+    write_record DNSMASQ_RECOVERY_FAILED || return 1
     return 1
   fi
 }
@@ -262,7 +275,7 @@ recover_before_reconcile() {
   fi
   set -e
 
-  if [[ "$recovered" -eq 1 ]]; then
+  if [[ "$recovered" -eq 1 && "$KEEP_ARTIFACTS" -eq 0 ]]; then
     rm -f "$TXN_RECORD"
     rm -rf "$WORK_DIR"
     return 0
@@ -282,7 +295,7 @@ exit_handler() {
     rm -f "$DNSMASQ_CANDIDATE"
   fi
 
-  if [[ "$FINALIZED" -eq 1 ]]; then
+  if [[ "$FINALIZED" -eq 1 && "$KEEP_ARTIFACTS" -eq 0 ]]; then
     [[ -z "$WORK_DIR" ]] || rm -rf "$WORK_DIR"
   elif [[ "$KEEP_ARTIFACTS" -eq 0 && "$PHASE" != "RECONCILE_FAILED" &&
           "$PHASE" != "RECONCILED" && "$PHASE" != "FINALIZING" &&
@@ -293,11 +306,17 @@ exit_handler() {
           "$PHASE" != "FINALIZE_SIGNAL_PENDING" ]]; then
     if [[ "$PHASE" == "COMMITTING" || "$PHASE" == "SWAPPED" ||
           "$PHASE" == "DNSMASQ_CONFIG_INSTALLED" || "$PHASE" == "DNSMASQ_COMMITTED" ]]; then
-      recover_before_reconcile >/dev/null 2>&1 || true
+      if ! recover_before_reconcile; then
+        [[ "$rc" -ne 0 ]] || rc=1
+      fi
     else
-      destroy_owned_candidate >/dev/null 2>&1 || true
-      rm -f "$TXN_RECORD"
-      [[ -z "$WORK_DIR" ]] || rm -rf "$WORK_DIR"
+      if destroy_owned_candidate && [[ "$KEEP_ARTIFACTS" -eq 0 ]]; then
+        rm -f "$TXN_RECORD"
+        [[ -z "$WORK_DIR" ]] || rm -rf "$WORK_DIR"
+      else
+        KEEP_ARTIFACTS=1
+        [[ "$rc" -ne 0 ]] || rc=1
+      fi
     fi
   fi
 
@@ -348,7 +367,7 @@ if [[ -e "$WORK_DIR" || -e "$DNSMASQ_CANDIDATE" ]]; then
   printf 'error: transaction artifact collision for %s\n' "$TXID" >&2
   exit 1
 fi
-write_record PREPARE
+write_record PREPARE || exit 1
 
 mkdir "$WORK_DIR"
 chmod 700 "$WORK_DIR"
@@ -470,7 +489,7 @@ read -r -a CREATE_WORDS <<< "$CREATE_LINE"
   exit 1
 }
 CANDIDATE_NETS_FP="$(sha256sum "$NETS_CANONICAL" | awk '{print $1}')"
-write_record PREPARE
+write_record PREPARE || exit 1
 
 if ipset list "$TEMP_SET" >/dev/null 2>&1; then
   printf 'error: temporary ipset collision: %s\n' "$TEMP_SET" >&2
@@ -478,7 +497,7 @@ if ipset list "$TEMP_SET" >/dev/null 2>&1; then
 fi
 ipset create "$TEMP_SET" "${CREATE_WORDS[@]:2}"
 TEMP_CREATED=1
-write_record TEMPORARY_SET_CREATED
+write_record TEMPORARY_SET_CREATED || exit 1
 
 while IFS= read -r network; do
   ipset add "$TEMP_SET" "$network"
@@ -493,7 +512,7 @@ if ! docker exec -i vpn-router-dns dnsmasq --test --conf-file=/dev/stdin < "$DNS
   printf 'error: dnsmasq candidate validation failed\n' >&2
   exit 1
 fi
-write_record CANDIDATES_VALIDATED
+write_record CANDIDATES_VALIDATED || exit 1
 
 check_abort() {
   if [[ "$ABORT_PENDING" -eq 1 ]]; then
@@ -508,7 +527,7 @@ check_abort() {
 stop_on_pending_signal() {
   local next_phase="$1"
   if [[ "$ABORT_PENDING" -eq 1 ]]; then
-    write_record "$next_phase"
+    write_record "$next_phase" || exit 1
     KEEP_ARTIFACTS=1
     printf 'abort requested after irreversible commit checkpoint (phase=%s)\n' "$PHASE" >&2
     exit 130
@@ -516,7 +535,7 @@ stop_on_pending_signal() {
 }
 
 check_abort
-write_record COMMITTING
+write_record COMMITTING || exit 1
 check_abort
 
 if ipset swap "$TEMP_SET" "$VPN_NETS"; then
@@ -529,12 +548,12 @@ PRODUCTION_AFTER_SWAP_FP="$(ipset_membership_hash "$VPN_NETS" 2>/dev/null || tru
 TEMP_AFTER_SWAP_FP="$(ipset_membership_hash "$TEMP_SET" 2>/dev/null || true)"
 
 if [[ "$PRODUCTION_AFTER_SWAP_FP" == "$CANDIDATE_NETS_FP" && "$TEMP_AFTER_SWAP_FP" == "$OLD_NETS_FP" ]]; then
-  write_record SWAPPED
+  write_record SWAPPED || exit 1
 elif [[ "$PRODUCTION_AFTER_SWAP_FP" == "$OLD_NETS_FP" && "$TEMP_AFTER_SWAP_FP" == "$CANDIDATE_NETS_FP" ]]; then
   printf 'error: ipset swap did not commit; production set is unchanged\n' >&2
   exit 1
 else
-  write_record COMMIT_STATE_AMBIGUOUS
+  write_record COMMIT_STATE_AMBIGUOUS || exit 1
   KEEP_ARTIFACTS=1
   printf 'error: ipset commit state is ambiguous; recovery artifacts retained\n' >&2
   exit 1
@@ -546,23 +565,23 @@ mv -f "$DNSMASQ_CANDIDATE" "$DNSMASQ_CONF"
 CONFIG_INSTALLED=1
 CANDIDATE_INSTALLED=1
 DNSMASQ_ID_BEFORE="$(docker inspect -f '{{.Id}}' vpn-router-dns)"
-write_record DNSMASQ_CONFIG_INSTALLED
+write_record DNSMASQ_CONFIG_INSTALLED || exit 1
 
 if ! recreate_dnsmasq "$CANDIDATE_DNSMASQ_HASH" "$EXPECTED_DOMAINS"; then
   printf 'error: dnsmasq recreation or validation failed; attempting pre-reconcile recovery\n' >&2
   recover_before_reconcile || exit 1
   exit 1
 fi
-write_record DNSMASQ_COMMITTED
+write_record DNSMASQ_COMMITTED || exit 1
 stop_on_pending_signal DNSMASQ_ABORT_PENDING
 
 if ! VPN_ROUTER_INHERITED_LOCK=1 "$BASE/scripts/apply-rules.sh"; then
-  write_record RECONCILE_FAILED
+  write_record RECONCILE_FAILED || exit 1
   KEEP_ARTIFACTS=1
   printf 'error: apply-rules.sh failed after commits; routing rollback was not attempted\n' >&2
   exit 1
 fi
-write_record RECONCILED
+write_record RECONCILED || exit 1
 stop_on_pending_signal RECONCILE_ABORT_PENDING
 
 [[ "$(ipset_membership_hash "$VPN_NETS")" == "$CANDIDATE_NETS_FP" ]] || { printf 'error: final vpn_nets fingerprint mismatch\n' >&2; KEEP_ARTIFACTS=1; exit 1; }
@@ -609,7 +628,7 @@ NON_SELECTED_ROUTE="$(ip -4 route get 203.0.113.1)"
 }
 
 stop_on_pending_signal VERIFY_ABORT_PENDING
-write_record FINALIZING
+write_record FINALIZING || exit 1
 stop_on_pending_signal FINALIZE_ABORT_PENDING
 if ! ipset destroy "$TEMP_SET"; then
   printf 'error: failed to destroy old rollback set; recovery information retained\n' >&2
@@ -618,7 +637,7 @@ if ! ipset destroy "$TEMP_SET"; then
 fi
 TEMP_CREATED=0
 if [[ "$ABORT_PENDING" -eq 1 ]]; then
-  write_record FINALIZE_SIGNAL_PENDING
+  write_record FINALIZE_SIGNAL_PENDING || exit 1
   KEEP_ARTIFACTS=1
   printf 'abort requested after temporary set destruction; transaction metadata retained\n' >&2
   exit 130

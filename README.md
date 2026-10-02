@@ -219,6 +219,9 @@ docker exec vpn-router-wg ip -4 rule show
 docker exec vpn-router-wg ip -4 route show table all
 ```
 
+Обычные сообщения dnsmasq направлены в stderr через `--log-facility=-` и доступны
+в `docker logs`. Query logging не включён.
+
 `ip route get ... mark 0xc8` проверяет policy table, **не доказывает**, что iptables
 действительно пометил пакет. Проверьте счётчики и реальные HTTPS-запросы с хоста
 и LAN-клиента; сравните внешний IP для выбранного и невыбранного направления.
@@ -263,8 +266,26 @@ docker exec vpn-router-wg ip -4 route show table all
 
 Не применяйте этот commit поверх работающего шлюза без backup и окна обслуживания.
 Старый service имел `ExecStartPre=docker compose up -d` и direct enablement:
-замените unit, уберите direct enablement service и включите timer; сохраните
-рабочие списки/config локально до перехода на `.example` layout. Отключите старый
+**до замены его unit** остановите активный `(exited)` service и уберите enablement:
+
+```bash
+systemctl disable --now vpn-router-rules.service
+```
+
+Сохраните рабочие списки/config локально до перехода на `.example` layout и
+подготовьте новый `config/router.conf`. Затем установите новые units:
+
+```bash
+install -m 644 systemd/vpn-router-rules.service /etc/systemd/system/
+install -m 644 systemd/vpn-router-rules.timer /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now vpn-router-rules.timer
+systemctl start vpn-router-rules.service
+./scripts/rebuild-lists.sh
+```
+
+Одного `disable` или `daemon-reload` недостаточно для остановки старого
+`RemainAfterExit=yes` service. Отключите старый
 `docker-vpn-rules.service`, если он установлен, и отдельно проверьте его правила.
 Новый код не делает широкую очистку `DOCKER-USER`; старые Docker-wide правила
 нужно удалять только адресно после review. Точные старые правила проекта и
@@ -317,6 +338,7 @@ Static checks:
 
 ```bash
 for f in scripts/*.sh config/router.conf.example; do bash -n "$f" || exit; done
+python3 -m unittest discover -s tests -v
 docker compose config --quiet
 systemd-analyze verify systemd/vpn-router-rules.*
 ```

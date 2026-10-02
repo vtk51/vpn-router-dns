@@ -22,7 +22,7 @@ services:
     image: jpillora/dnsmasq:latest
     container_name: vpn-router-dns
     # No webproc UI: do not expose a management listener on host port 8080.
-    entrypoint: [dnsmasq, --keep-in-foreground]
+    entrypoint: [dnsmasq, --keep-in-foreground, --log-facility=-]
     network_mode: host
     cap_add:
       - NET_ADMIN
